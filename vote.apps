@@ -1,0 +1,131 @@
+function doPost(e) {
+  let response = { status: "error", message: "Невідома помилка" };
+  
+  try {
+    const data = JSON.parse(e.postData.contents);
+    
+    if (data.action === "login") {
+      response = handleLogin(data.token);
+    } else if (data.action === "save") {
+      response = handleSave(data.token, data.votes, data.is_final);
+    } else {
+      throw new Error("Невідома дія");
+    }
+  } catch (error) {
+    // Штучна затримка проти Brute-force
+    Utilities.sleep(1500); 
+    response.message = error.toString();
+  }
+  
+  return ContentService.createTextOutput(JSON.stringify(response))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+// Функція авторизації та отримання прогресу
+function handleLogin(token) {
+  if (!token) throw new Error("Токен не передано");
+  
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const user = authenticateUser(ss, token);
+  
+  // Отримуємо критерії
+  const criteriaData = ss.getSheetByName("Criteria").getDataRange().getValues();
+  let criteria = [];
+  for (let i = 1; i < criteriaData.length; i++) {
+    criteria.push({
+      id: criteriaData[i][0],
+      name: criteriaData[i][1],
+      description: criteriaData[i][2]
+    });
+  }
+  
+  // Отримуємо прогрес
+  const votesData = ss.getSheetByName("Votes").getDataRange().getValues();
+  let progress = { status: "draft", votes: [] };
+  
+  for (let i = 1; i < votesData.length; i++) {
+    if (votesData[i][0] === user.id) {
+      progress.votes.push({
+        target_id: votesData[i][1],
+        criterion_id: votesData[i][2],
+        score: votesData[i][3]
+      });
+      // Якщо хоча б один запис має статус submitted, вважаємо все голосування завершеним
+      if (votesData[i][4] === "submitted") {
+        progress.status = "submitted";
+      }
+    }
+  }
+  
+  return { status: "success", user: user, criteria: criteria, progress: progress };
+}
+
+// Функція збереження голосів
+function handleSave(token, newVotes, isFinal) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const user = authenticateUser(ss, token);
+  const votesSheet = ss.getSheetByName("Votes");
+  
+  // Перевірка, чи вже не завершено голосування
+  const currentData = votesSheet.getDataRange().getValues();
+  for (let i = 1; i < currentData.length; i++) {
+    if (currentData[i][0] === user.id && currentData[i][4] === "submitted") {
+      throw new Error("Голосування вже завершено. Зміни неможливі.");
+    }
+  }
+
+  // Знаходимо рядки, які потрібно оновити або видалити (видаляти старі простіше, ніж шукати і перезаписувати клітинки)
+  // Видаляємо старі записи для цього користувача і цих критеріїв
+  const criteriaIdsInRequest = [...new Set(newVotes.map(v => v.criterion_id))];
+  
+  // Видалення рядків з кінця, щоб не збилися індекси
+  for (let i = currentData.length - 1; i >= 1; i--) {
+    if (currentData[i][0] === user.id && criteriaIdsInRequest.includes(currentData[i][2])) {
+      votesSheet.deleteRow(i + 1); 
+    }
+  }
+  
+  // Записуємо нові значення
+  const status = isFinal ? "submitted" : "draft";
+  const rowsToInsert = newVotes.map(v => [
+    user.id,          // VoterID
+    v.target_id,      // TargetID
+    v.criterion_id,   // CriterionID
+    v.score,          // Score
+    status            // Status
+  ]);
+  
+  if (rowsToInsert.length > 0) {
+    votesSheet.getRange(votesSheet.getLastRow() + 1, 1, rowsToInsert.length, rowsToInsert[0].length)
+              .setValues(rowsToInsert);
+  }
+
+  // Якщо це фінальне збереження, оновлюємо статус УСІХ попередніх драфтів цього юзера
+  if (isFinal) {
+    const updatedData = votesSheet.getDataRange().getValues();
+    for (let i = 1; i < updatedData.length; i++) {
+      if (updatedData[i][0] === user.id && updatedData[i][4] === "draft") {
+        votesSheet.getRange(i + 1, 5).setValue("submitted");
+      }
+    }
+  }
+  
+  return { status: "success", message: "Збережено успішно" };
+}
+
+// Допоміжна функція перевірки токена
+function authenticateUser(ss, token) {
+  const cleanToken = token.replace(/-/g, "").toUpperCase();
+  const tokenData = ss.getSheetByName("Tokens").getDataRange().getValues();
+  
+  for (let i = 1; i < tokenData.length; i++) {
+    if (tokenData[i][0] === cleanToken) {
+      return {
+        id: tokenData[i][1],
+        role: tokenData[i][2],
+        group_size: tokenData[i][3]
+      };
+    }
+  }
+  throw new Error("Невірний токен");
+}
