@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Система Оцінювання</title>
+    <style>
+        :root { --primary: #4F46E5; --primary-hover: #4338CA; --bg: #F3F4F6; --card-bg: #FFFFFF; --text-main: #1F2937; --text-muted: #6B7280; --border: #E5E7EB; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: var(--bg); color: var(--text-main); margin: 0; padding: 20px; display: flex; justify-content: center; }
+        .container { width: 100%; max-width: 600px; }
+        .card { background: var(--card-bg); border-radius: 12px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        h1, h2 { margin-top: 0; color: var(--text-main); }
+        p { color: var(--text-muted); }
+        .input-group { margin-bottom: 20px; }
+        input[type="text"] { width: 100%; padding: 12px; font-size: 24px; text-align: center; letter-spacing: 2px; border: 2px solid var(--border); border-radius: 8px; box-sizing: border-box; text-transform: uppercase; }
+        input[type="text"]:focus { border-color: var(--primary); outline: none; }
+        button { width: 100%; background-color: var(--primary); color: white; border: none; padding: 14px; font-size: 16px; font-weight: 600; border-radius: 8px; cursor: pointer; transition: background 0.2s; }
+        button:hover { background-color: var(--primary-hover); }
+        button:disabled { background-color: #9CA3AF; cursor: not-allowed; }
+        .hidden { display: none !important; }
+        .progress-bar { height: 6px; background: var(--border); border-radius: 3px; margin-bottom: 20px; overflow: hidden; }
+        .progress-fill { height: 100%; background: var(--primary); width: 0%; transition: width 0.3s ease; }
+        .student-row { padding: 16px 0; border-bottom: 1px solid var(--border); }
+        .student-row:last-child { border-bottom: none; }
+        .student-name { font-weight: 500; margin-bottom: 8px; display: flex; justify-content: space-between; }
+        .self-badge { background: #DBEAFE; color: #1E40AF; font-size: 12px; padding: 2px 8px; border-radius: 12px; }
+        .range-container { display: flex; align-items: center; gap: 12px; }
+        input[type="range"] { flex-grow: 1; accent-color: var(--primary); }
+        .score-display { font-weight: bold; font-size: 18px; min-width: 24px; text-align: center; }
+        .loader { border: 4px solid var(--border); border-top: 4px solid var(--primary); border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; margin: 0 auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .error { color: #DC2626; margin-top: 10px; text-align: center; }
+        .success { color: #059669; text-align: center; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div id="login-screen" class="card">
+        <h1>Вхід</h1>
+        <p>Введіть ваш токен доступу</p>
+        <div class="input-group">
+            <input type="text" id="token-input" placeholder="XXX-XXX" maxlength="7" autocomplete="off">
+        </div>
+        <button id="login-btn" onclick="login()">Увійти</button>
+        <div id="login-error" class="error hidden"></div>
+        <div id="login-loader" class="loader hidden" style="margin-top: 16px;"></div>
+    </div>
+    <div id="voting-screen" class="card hidden">
+        <div class="progress-bar">
+            <div id="progress-fill" class="progress-fill"></div>
+        </div>
+        <h2 id="criterion-name">Назва критерію</h2>
+        <p id="criterion-desc">Опис критерію</p>
+        <div id="students-list"></div>
+        <div id="vote-error" class="error hidden" style="margin: 16px 0;"></div>
+        <div style="display: flex; gap: 10px; margin-top: 24px;">
+            <button id="prev-btn" onclick="prevCriterion()" style="background-color: var(--border); color: var(--text-main);">Назад</button>
+            <button id="next-btn" onclick="nextCriterion()">Далі</button>
+        </div>
+    </div>
+    <div id="success-screen" class="card hidden text-center">
+        <h2>Дякуємо!</h2>
+        <p class="success">Ваші результати успішно збережено.</p>
+        <p>Можете закрити цю сторінку.</p>
+    </div>
+</div>
+<script>
+    const API_URL = "https://script.google.com/macros/s/AKfycbwJq5fRZ6p7OkbcZHD2s53Cd-nVOv6HxqwK2z3YQ1pFa5PuImbJDUClIaFmwVYbqblKoQ/exec"; 
+    let appState = { token: "", user: null, criteria: [], currentCriterionIndex: 0, votes: [] };
+    document.getElementById('token-input').addEventListener('input', function (e) {
+        let value = e.target.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+        if (value.length > 3) value = value.substring(0, 3) + '-' + value.substring(3, 6);
+        e.target.value = value;
+    });
+    async function login() {
+        const cleanToken = document.getElementById('token-input').value.replace('-', '');
+        if (cleanToken.length !== 6) return showError('login-error', 'Токен має містити 6 символів');
+        appState.token = cleanToken;
+        uiState('loading-login');
+        try {
+            const response = await fetch(API_URL, { method: 'POST', body: JSON.stringify({ action: "login", token: cleanToken }) });
+            const jsonResponse = await response.json();
+            if (jsonResponse.status === 'error') { showError('login-error', jsonResponse.message); return uiState('login'); }
+            if (jsonResponse.progress.status === 'submitted') return uiState('success');
+            appState.user = jsonResponse.user; appState.criteria = jsonResponse.criteria; appState.votes = jsonResponse.progress.votes || [];
+            appState.currentCriterionIndex = 0;
+            for (let i = 0; i < appState.criteria.length; i++) {
+                if (!appState.votes.some(v => v.criterion_id === appState.criteria[i].id)) { appState.currentCriterionIndex = i; break; }
+            }
+            if (appState.currentCriterionIndex >= appState.criteria.length) appState.currentCriterionIndex = appState.criteria.length - 1;
+            renderVotingScreen(); uiState('voting');
+        } catch (error) { showError('login-error', 'Помилка з\'єднання.'); uiState('login'); }
+    }
+    function renderVotingScreen() {
+        const crit = appState.criteria[appState.currentCriterionIndex];
+        document.getElementById('criterion-name').innerText = crit.name;
+        document.getElementById('criterion-desc').innerText = crit.description;
+        document.getElementById('progress-fill').style.width = `${((appState.currentCriterionIndex + 1) / appState.criteria.length) * 100}%`;
+        document.getElementById('prev-btn').style.display = appState.currentCriterionIndex === 0 ? 'none' : 'block';
+        const nextBtn = document.getElementById('next-btn');
+        if (appState.currentCriterionIndex === appState.criteria.length - 1) { nextBtn.innerText = "Завершити"; nextBtn.style.backgroundColor = "#059669"; } 
+        else { nextBtn.innerText = "Далі"; nextBtn.style.backgroundColor = "var(--primary)"; }
+        const listDiv = document.getElementById('students-list'); listDiv.innerHTML = '';
+        for (let i = 1; i <= appState.user.group_size; i++) {
+            const targetId = `student${i}`; const isSelf = targetId === appState.user.id;
+            let displayName = isSelf ? "Ваша оцінка" : targetId;
+            let badge = isSelf ? '<span class="self-badge">Самооцінка</span>' : '';
+            const existingVote = appState.votes.find(v => v.target_id === targetId && v.criterion_id === crit.id);
+            const score = existingVote ? existingVote.score : 3;
+            const row = document.createElement('div'); row.className = 'student-row';
+            row.innerHTML = `<div class="student-name">${displayName} ${badge}</div><div class="range-container"><span style="font-size: 14px; color: var(--text-muted);">1</span><input type="range" id="slider-${targetId}" min="1" max="5" value="${score}" oninput="document.getElementById('val-${targetId}').innerText = this.value"><span style="font-size: 14px; color: var(--text-muted);">5</span><div class="score-display" id="val-${targetId}">${score}</div></div>`;
+            listDiv.appendChild(row);
+        }
+    }
+    async function saveCurrentPageVotes(isFinal) {
+        const crit = appState.criteria[appState.currentCriterionIndex]; let currentVotes = [];
+        for (let i = 1; i <= appState.user.group_size; i++) {
+            const targetId = `student${i}`; const val = parseInt(document.getElementById(`slider-${targetId}`).value);
+            currentVotes.push({ target_id: targetId, criterion_id: crit.id, score: val });
+            const existingIdx = appState.votes.findIndex(v => v.target_id === targetId && v.criterion_id === crit.id);
+            if (existingIdx > -1) appState.votes[existingIdx].score = val; else appState.votes.push({target_id: targetId, criterion_id: crit.id, score: val});
+        }
+        document.getElementById('next-btn').disabled = true; document.getElementById('prev-btn').disabled = true; document.getElementById('vote-error').classList.add('hidden');
+        try {
+            const response = await fetch(API_URL, { method: 'POST', body: JSON.stringify({ action: "save", token: appState.token, votes: currentVotes, is_final: isFinal }) }).then(res => res.json());
+            if (response.status === 'error') throw new Error(response.message);
+            return true;
+        } catch (error) { showError('vote-error', 'Помилка збереження.'); return false; } 
+        finally { document.getElementById('next-btn').disabled = false; document.getElementById('prev-btn').disabled = false; }
+    }
+    async function nextCriterion() {
+        const isFinal = appState.currentCriterionIndex === appState.criteria.length - 1;
+        if (await saveCurrentPageVotes(isFinal)) { if (isFinal) uiState('success'); else { appState.currentCriterionIndex++; renderVotingScreen(); } }
+    }
+    function prevCriterion() { saveCurrentPageVotes(false).then(saved => { if (saved) { appState.currentCriterionIndex--; renderVotingScreen(); } }); }
+    function showError(elementId, msg) { const el = document.getElementById(elementId); el.innerText = msg; el.classList.remove('hidden'); }
+    function uiState(state) {
+        ['login-screen', 'voting-screen', 'success-screen', 'login-loader'].forEach(id => document.getElementById(id).classList.add('hidden'));
+        document.getElementById('login-btn').disabled = false;
+        if (state === 'login') document.getElementById('login-screen').classList.remove('hidden');
+        if (state === 'loading-login') { document.getElementById('login-screen').classList.remove('hidden'); document.getElementById('login-loader').classList.remove('hidden'); document.getElementById('login-btn').disabled = true; }
+        if (state === 'voting') document.getElementById('voting-screen').classList.remove('hidden');
+        if (state === 'success') document.getElementById('success-screen').classList.remove('hidden');
+    }
+</script>
+</body>
+</html>
